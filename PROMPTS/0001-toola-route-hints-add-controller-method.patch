@@ -1,0 +1,50 @@
+--- a/ToolA_Feature_Extractor_Prompt.md
++++ b/ToolA_Feature_Extractor_Prompt.md
+@@ -132,13 +132,15 @@ Add a `route_hints` field to each file entry in both the Markdown report and JS
+ 
+ ```json
+ "route_hints": [
+   {
+     "method": "POST",
+     "uri": "/api/users",
+     "source_file": "routes/api.php",
+     "source_line": 14,
+-    "confidence": "high"
++    "confidence": "high",
++    "controller_method": "UserController@store"
+   }
+ ]
+ ```
+ 
+ Field definitions:
+@@ -146,7 +148,8 @@ Field definitions:
+ - `method`: HTTP verb in uppercase (`GET`, `POST`, `PUT`, `PATCH`, `DELETE`)
+ - `uri`: URI pattern as declared in the route file (e.g. `/api/users/{id}`)
+ - `source_file`: relative path to the route definition file
+ - `source_line`: line number of the route declaration
+ - `confidence`: `"high"` if parsed from explicit route file; `"low"` if inferred from file path only
++- `controller_method`: controller and action as parsed from route definition (e.g. `"UserController@store"`); `null` if not determinable (e.g. closure routes or plain PHP fallback)
+ 
+ ---
+ 
+@@ -387,14 +390,16 @@ Field definitions:
+   "route_hints": [
+     {
+       "method": "POST",
+       "uri": "/api/users",
+       "source_file": "routes/api.php",
+       "source_line": 14,
+-      "confidence": "high"
++      "confidence": "high",
++      "controller_method": "UserController@store"
+     },
+     {
+       "method": "GET",
+       "uri": "/api/users/{id}",
+       "source_file": "routes/api.php",
+       "source_line": 15,
+-      "confidence": "high"
++      "confidence": "high",
++      "controller_method": "UserController@show"
+     }
+   ],

@@ -5,12 +5,45 @@ __pycache__/
 venv/
 
 .DS_Store
+.idea/
+.vscode/
 
 # Tool outputs (recommended to keep untracked)
 report*.md
 result*.md
 features*.jsonl
+features*.ndjson
+reports/
+outputs/
+out/
 
 # Local build artifacts
 .built/
 
+# Test/coverage artifacts
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+coverage/
+htmlcov/
+
+# Logs/temp files
+*.log
+*.tmp
+tmp/
+.tmp/
+
+# Secret/config files (keep local)
+.env
+.env.*
+*.pem
+*.key
+*.p12
+*.pfx
+*.jks
+*.kdbx
+id_rsa
+id_ed25519
+secrets/
+.secrets/

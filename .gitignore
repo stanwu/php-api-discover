@@ -14,8 +14,8 @@ result*.md
 features*.jsonl
 features*.ndjson
 raw.jsonl
-pattern*.json
-test*.jsonl
+*.json
+*.jsonl
 reports/
 outputs/
 out/

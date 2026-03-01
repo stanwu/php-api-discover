@@ -1,0 +1,24 @@
+{
+  "info": {
+    "name": "API Collection",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json",
+    "_tool_c_generated": true,
+    "_source_jsonl_schema_version": "2.0",
+    "_generated_at": "2026-03-01T06:51:18Z",
+    "_framework": "plain",
+    "_pattern_json_version": "1.0"
+  },
+  "variable": [
+    {
+      "key": "baseUrl",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "authToken",
+      "value": "",
+      "type": "string"
+    }
+  ],
+  "item": []
+}

@@ -2,14 +2,15 @@ PYTHON  := .venv/bin/python
 PIP     := .venv/bin/pip
 PYTEST  := .venv/bin/pytest
 
-.PHONY: install test test-unit test-sanity test-sanity-b lint clean help scan-demo generate-demo
+.PHONY: install test test-unit test-sanity test-sanity-b test-sanity-c lint clean help \
+        scan-demo generate-demo classify-demo
 
 ## install       — install pytest + jsonschema into the project venv
 install:
 	$(PIP) install pytest jsonschema
 
-## test           — run all unit + sanity tests (tool_a + tool_b)
-test: test-unit test-sanity test-sanity-b
+## test           — run all unit + sanity tests (tool_a + tool_b + tool_c)
+test: test-unit test-sanity test-sanity-b test-sanity-c
 
 ## test-unit      — run pytest unit tests in tests/
 test-unit:
@@ -23,7 +24,11 @@ test-sanity:
 test-sanity-b:
 	$(PYTHON) tests/test_tool_b_sanity.py
 
-## lint           — syntax-check all source files (tool_a + tool_b + toolchain)
+## test-sanity-c  — run tool_c sanity test suite
+test-sanity-c:
+	$(PYTHON) tests/test_tool_c_sanity.py
+
+## lint           — syntax-check all source files (tool_a + tool_b + tool_c + toolchain)
 lint:
 	$(PYTHON) -m py_compile \
 		tool_a.py tool_a/__main__.py \
@@ -42,6 +47,13 @@ lint:
 		tool_b/agents/codex.py tool_b/agents/gemini.py \
 		tool_b/agents/mock.py \
 		toolchain/toolchain_validator.py
+	$(PYTHON) -m py_compile \
+		tool_c.py tool_c/__main__.py \
+		tool_c/jsonl_reader.py tool_c/rules_loader.py \
+		tool_c/classifier.py tool_c/method_inferrer.py \
+		tool_c/envelope_matcher.py tool_c/redactor.py \
+		tool_c/postman_builder.py tool_c/postman_validator.py \
+		tool_c/catalog_writer.py
 	@echo "Syntax OK"
 
 ## clean          — remove compiled bytecode and pytest cache
@@ -54,14 +66,20 @@ clean:
 scan-demo:
 	$(PYTHON) tool_a.py scan --root fixtures/ --out report.md --raw raw.jsonl
 
-## generate-demo  — dry-run tool_b against test.jsonl (no agent call)
+## generate-demo  — dry-run tool_b against raw.jsonl (no agent call)
 generate-demo:
 	$(PYTHON) tool_b.py generate \
-		--jsonl test.jsonl \
+		--jsonl raw.jsonl \
 		--out pattern_demo.json \
 		--agent mock \
 		--mock-response-file fixtures/fixture_mock_agent_valid.json \
 		--dry-run
+
+## classify-demo  — run tool_c against raw.jsonl + pattern.json (dry-run)
+classify-demo:
+	$(PYTHON) tool_c.py dry-run \
+		--jsonl raw.jsonl \
+		--rules pattern.json
 
 ## help           — list available targets
 help:

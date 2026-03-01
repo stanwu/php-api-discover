@@ -1,7 +1,8 @@
 """
-Unit tests for tool_a v2 — pytest edition.
+Unit tests for tool_a v2, tool_b v1, tool_c v1 — pytest edition.
 
 Covers:
+  tool_a:
   - scorer        : score_file() clamping and summation
   - redactor      : redact_secrets() all four pattern rules
   - scanner       : collect_files() filtering, max_files, size limit
@@ -10,6 +11,21 @@ Covers:
                          _extract_method_hints, _classify_output
   - helper_registry    : build, count_calls, finalize_stats, get_call_pattern
   - __main__ helpers   : _fpr_reason, _score_percentiles, _compute_co_occurrence
+
+  tool_b:
+  - toolchain_validator : V1-V13 rules
+  - context_selector    : select_signals, select_file_records, estimate_tokens
+  - prompt_assembler    : assemble_prompt block presence
+
+  tool_c:
+  - classifier          : compute_toolc_score, classify_files, tiers
+  - method_inferrer     : all 5 inference sources
+  - envelope_matcher    : match_envelope template logic
+  - redactor            : redact_body, param_placeholder
+  - postman_builder     : build_collection, body generation, folder grouping
+  - postman_validator   : validate_postman_collection
+  - catalog_writer      : build_catalog structure
+  - jsonl_reader        : read_jsonl schema validation
 """
 
 from __future__ import annotations
@@ -1320,3 +1336,996 @@ class TestAssemblePrompt:
         result = assemble_prompt(_asm_global_stats(), _asm_signals(), _asm_files())
         assert isinstance(result, str)
         assert len(result) > 100
+
+
+# =============================================================================
+# tool_c — classifier
+# =============================================================================
+
+from tool_c.classifier import (
+    compute_toolc_score,
+    classify_files,
+    find_signal_in_pattern,
+    ClassifiedFile,
+)
+
+
+def _c_pattern(endpoint=30, uncertain=8, strong_weight=25, weak_weight=8, neg_weight=-15):
+    """Minimal pattern.json dict for classifier tests."""
+    return {
+        "scoring": {
+            "strong_signals": [
+                {"name": "strong_sig", "pattern": r"strong", "weight": strong_weight, "kind": "strong"}
+            ],
+            "weak_signals": [
+                {"name": "weak_sig", "pattern": r"weak", "weight": weak_weight, "kind": "weak"}
+            ],
+            "negative_signals": [
+                {"name": "neg_sig", "pattern": r"neg", "weight": neg_weight, "kind": "negative"}
+            ],
+            "thresholds": {"endpoint": endpoint, "uncertain": uncertain},
+        },
+        "endpoint_envelopes": {"templates": []},
+        "method_inference": {
+            "priority_order": ["route_hints", "default"],
+            "rules": [],
+            "default_method": "GET",
+        },
+        "postman_defaults": {
+            "collection_name": "Test", "base_url_variable": "baseUrl",
+            "auth_token_variable": "authToken", "default_headers": [],
+            "auth_header": {"key": "Authorization", "value_template": "Bearer {{authToken}}"},
+        },
+    }
+
+
+def _c_file(path="api.php", strong=0, weak=0, neg=0, custom_helpers=None, score=None):
+    """Build a minimal file record dict for classifier tests."""
+    signals = {
+        "strong": [{"name": "strong_sig", "occurrences": strong, "line_nos": []}] if strong else [],
+        "weak":   [{"name": "weak_sig",   "occurrences": weak,   "line_nos": []}] if weak   else [],
+        "negative": [{"name": "neg_sig",  "occurrences": neg,    "line_nos": []}] if neg    else [],
+    }
+    helpers = [{"name": h} for h in (custom_helpers or [])]
+    return {
+        "record_type": "file", "schema_version": "2.0",
+        "path": path, "framework": "plain",
+        "score": score if score is not None else 0,
+        "score_breakdown": [],
+        "signals": signals,
+        "custom_helpers_called": helpers,
+        "route_hints": [{"method": "unknown", "uri": f"/{path}", "source_file": path,
+                         "source_line": 0, "confidence": "low", "controller_method": None}],
+        "input_params": {"get": [], "post": [], "request": [], "json_body": []},
+        "method_hints": [], "envelope_keys": [], "output_points": [],
+        "redaction_count": 0, "skipped": False, "skip_reason": None,
+        "encoding_note": None, "dynamic_notes": [], "notes": [],
+    }
+
+
+class TestFindSignalInPattern:
+    def test_finds_existing_signal(self):
+        sigs = [{"name": "foo", "weight": 10}, {"name": "bar", "weight": 5}]
+        assert find_signal_in_pattern("foo", sigs)["weight"] == 10
+
+    def test_returns_none_for_missing(self):
+        sigs = [{"name": "foo", "weight": 10}]
+        assert find_signal_in_pattern("baz", sigs) is None
+
+    def test_exact_match_only(self):
+        sigs = [{"name": "foo_bar", "weight": 10}]
+        assert find_signal_in_pattern("foo", sigs) is None
+
+
+class TestComputeToolcScore:
+    def test_strong_signal_occurrences_capped_at_3(self):
+        rec = _c_file(strong=5)
+        score, _ = compute_toolc_score(rec, _c_pattern(strong_weight=10))
+        # capped at min(5,3) * 10 = 30
+        assert score == 30
+
+    def test_strong_signal_occurrences_2(self):
+        rec = _c_file(strong=2)
+        score, _ = compute_toolc_score(rec, _c_pattern(strong_weight=20))
+        assert score == 40
+
+    def test_weak_signal_not_multiplied(self):
+        rec = _c_file(weak=5)
+        score, _ = compute_toolc_score(rec, _c_pattern(weak_weight=8))
+        # weight added once regardless of occurrences
+        assert score == 8
+
+    def test_negative_signal_reduces_score(self):
+        rec = _c_file(strong=2, neg=1)
+        score, _ = compute_toolc_score(rec, _c_pattern(strong_weight=25, neg_weight=-15))
+        assert score == 25 * 2 - 15
+
+    def test_score_clamped_to_zero(self):
+        rec = _c_file(neg=1)
+        score, _ = compute_toolc_score(rec, _c_pattern(neg_weight=-50))
+        assert score == 0
+
+    def test_score_clamped_to_100(self):
+        rec = _c_file(strong=3)
+        score, _ = compute_toolc_score(rec, _c_pattern(strong_weight=50))
+        # 50 * 3 = 150, clamped to 100
+        assert score == 100
+
+    def test_matched_signals_reported(self):
+        rec = _c_file(strong=1, weak=1, neg=1)
+        _, matched = compute_toolc_score(rec, _c_pattern())
+        assert "strong_sig" in matched["strong"]
+        assert "weak_sig"   in matched["weak"]
+        assert "neg_sig"    in matched["negative"]
+
+    def test_custom_helper_counted_as_strong(self):
+        # strong_sig also registered in strong_patterns
+        rec = _c_file(custom_helpers=["strong_sig", "strong_sig"])
+        score, matched = compute_toolc_score(rec, _c_pattern(strong_weight=10))
+        # call_count=2, min(2,3)*10 = 20
+        assert score == 20
+        assert "strong_sig" in matched["strong"]
+
+    def test_double_count_guard(self):
+        # strong_sig appears in both signals.strong (occ=1) and custom_helpers_called
+        rec = _c_file(strong=1, custom_helpers=["strong_sig"])
+        score, _ = compute_toolc_score(rec, _c_pattern(strong_weight=10))
+        # Should count only once via signals.strong: min(1,3)*10 = 10
+        assert score == 10
+
+    def test_unknown_signal_ignored(self):
+        rec = _c_file()
+        rec["signals"]["strong"] = [{"name": "unknown_xyz", "occurrences": 3, "line_nos": []}]
+        score, _ = compute_toolc_score(rec, _c_pattern())
+        assert score == 0
+
+
+class TestClassifyFiles:
+    def test_l1_tier(self):
+        rec = _c_file(strong=2, score=50)
+        classified = classify_files([rec], _c_pattern(strong_weight=25, endpoint=30, uncertain=8))
+        assert classified[0].tier == "L1"
+        assert classified[0].confidence_label == "confirmed_endpoint"
+
+    def test_l2_tier(self):
+        rec = _c_file(weak=1, score=8)
+        classified = classify_files([rec], _c_pattern(weak_weight=8, endpoint=30, uncertain=8))
+        assert classified[0].tier == "L2"
+        assert classified[0].confidence_label == "uncertain"
+
+    def test_l3_tier(self):
+        rec = _c_file(neg=1, score=0)
+        classified = classify_files([rec], _c_pattern(neg_weight=-15, endpoint=30, uncertain=8))
+        assert classified[0].tier == "L3"
+        assert classified[0].confidence_label == "not_endpoint"
+
+    def test_sorted_by_path(self):
+        recs = [_c_file("z.php"), _c_file("a.php"), _c_file("m.php")]
+        classified = classify_files(recs, _c_pattern())
+        paths = [c.file_record["path"] for c in classified]
+        assert paths == sorted(paths)
+
+    def test_divergence_warning_triggered(self):
+        rec = _c_file(strong=2, score=5)   # toolc=50, toola=5 → diff=45 > 30
+        classified = classify_files([rec], _c_pattern(strong_weight=25, endpoint=30, uncertain=8))
+        assert classified[0].score_divergence_warning is not None
+
+    def test_no_divergence_warning_within_range(self):
+        rec = _c_file(strong=2, score=50)
+        classified = classify_files([rec], _c_pattern(strong_weight=25, endpoint=30, uncertain=8))
+        assert classified[0].score_divergence_warning is None
+
+    def test_exclude_paths_skips_matching(self):
+        recs = [_c_file("vendor/foo.php", strong=3), _c_file("app/api.php", strong=3)]
+        pattern = _c_pattern()
+        pattern["exclude_paths"] = ["vendor/"]
+        classified = classify_files(recs, pattern)
+        paths = [c.file_record["path"] for c in classified]
+        assert "vendor/foo.php" not in paths
+        assert "app/api.php" in paths
+
+    def test_include_extensions_filters_non_php(self):
+        recs = [_c_file("script.js", strong=3), _c_file("api.php", strong=3)]
+        pattern = _c_pattern()
+        pattern["include_extensions"] = [".php"]
+        classified = classify_files(recs, pattern)
+        paths = [c.file_record["path"] for c in classified]
+        assert "script.js" not in paths
+        assert "api.php" in paths
+
+
+# =============================================================================
+# tool_c — method_inferrer
+# =============================================================================
+
+from tool_c.method_inferrer import infer_methods, MethodResult
+
+
+def _route_hint(method="POST", uri="/api/x", confidence="high",
+                src_file="routes/api.php", src_line=1, controller=None):
+    return {"method": method, "uri": uri, "source_file": src_file,
+            "source_line": src_line, "confidence": confidence,
+            "controller_method": controller}
+
+
+def _mi_file(path="api.php", route_hints=None, method_hints=None, params=None, strong_signals=None):
+    """Minimal file record for method_inferrer tests."""
+    return {
+        "path": path,
+        "route_hints": route_hints or [],
+        "method_hints": method_hints or [],
+        "input_params": params or {"get": [], "post": [], "request": [], "json_body": []},
+        "signals": {
+            "strong": [{"name": s, "occurrences": 1, "line_nos": []} for s in (strong_signals or [])],
+            "weak": [], "negative": [],
+        },
+    }
+
+
+def _mi_pattern(priority=None, rules=None, default="GET"):
+    return {
+        "method_inference": {
+            "priority_order": priority or [
+                "route_hints", "request_method_check",
+                "input_param_type", "signal_based", "default",
+            ],
+            "rules": rules or [],
+            "default_method": default,
+        }
+    }
+
+
+class TestMethodInferrer:
+    def test_source1_high_confidence_route_hint(self):
+        rec = _mi_file(route_hints=[_route_hint("POST", "/api/users", "high")])
+        results = infer_methods(rec, _mi_pattern())
+        assert len(results) == 1
+        assert results[0].method == "POST"
+        assert results[0].inference_source == "route_hints"
+
+    def test_source1_low_confidence_skipped(self):
+        rec = _mi_file(route_hints=[_route_hint("POST", "/api/users", "low")])
+        results = infer_methods(rec, _mi_pattern())
+        # Falls through to default
+        assert results[0].inference_source != "route_hints"
+
+    def test_source1_multiple_high_hints_returns_multiple(self):
+        hints = [
+            _route_hint("GET",  "/api/x", "high"),
+            _route_hint("POST", "/api/x", "high"),
+        ]
+        rec = _mi_file(route_hints=hints)
+        results = infer_methods(rec, _mi_pattern())
+        assert len(results) == 2
+        methods = {r.method for r in results}
+        assert methods == {"GET", "POST"}
+
+    def test_source1_unknown_method_becomes_get(self):
+        rec = _mi_file(route_hints=[_route_hint("UNKNOWN", "/api/x", "high")])
+        results = infer_methods(rec, _mi_pattern())
+        assert results[0].method == "GET"
+
+    def test_source1_route_source_format(self):
+        rec = _mi_file(route_hints=[_route_hint("GET", "/api/x", "high",
+                                                 src_file="routes/api.php", src_line=14)])
+        results = infer_methods(rec, _mi_pattern())
+        assert results[0].route_source == "routes/api.php:14"
+
+    def test_source2_request_method_check(self):
+        hints = [{"method": "POST", "evidence": "if ($_SERVER['REQUEST_METHOD'] == 'POST') {",
+                  "line_no": 3}]
+        rec = _mi_file(method_hints=hints)
+        results = infer_methods(rec, _mi_pattern())
+        assert results[0].method == "POST"
+        assert results[0].inference_source == "request_method_check"
+
+    def test_source3_json_body_only_gives_post(self):
+        params = {"get": [], "post": [], "request": [], "json_body": [{"key": "name", "line_no": 1}]}
+        rec = _mi_file(params=params)
+        results = infer_methods(rec, _mi_pattern())
+        assert results[0].method == "POST"
+        assert results[0].inference_source == "input_param_type"
+
+    def test_source3_get_only_gives_get(self):
+        params = {"get": [{"key": "id", "line_no": 1}], "post": [], "request": [], "json_body": []}
+        rec = _mi_file(params=params)
+        results = infer_methods(rec, _mi_pattern())
+        assert results[0].method == "GET"
+
+    def test_source3_both_json_and_get_gives_two_items(self):
+        params = {"get": [{"key": "id", "line_no": 1}], "post": [],
+                  "request": [], "json_body": [{"key": "body", "line_no": 2}]}
+        rec = _mi_file(params=params)
+        results = infer_methods(rec, _mi_pattern())
+        assert len(results) == 2
+        methods = {r.method for r in results}
+        assert methods == {"GET", "POST"}
+
+    def test_source4_signal_based(self):
+        rules = [{"source": "signal_based", "condition": "AJAX",
+                  "matched_signal_name": "wp_ajax", "method": "POST"}]
+        rec = _mi_file(strong_signals=["wp_ajax"])
+        results = infer_methods(rec, _mi_pattern(rules=rules))
+        assert results[0].method == "POST"
+        assert results[0].inference_source == "signal_based"
+
+    def test_source5_default_method(self):
+        rec = _mi_file()  # no route hints, no hints, no params, no signals
+        results = infer_methods(rec, _mi_pattern(default="POST"))
+        assert results[0].method == "POST"
+        assert results[0].inference_source == "default"
+
+    def test_controller_method_preserved(self):
+        hint = _route_hint("GET", "/api/x", "high", controller="UserController@index")
+        rec = _mi_file(route_hints=[hint])
+        results = infer_methods(rec, _mi_pattern())
+        assert results[0].controller_method == "UserController@index"
+
+
+# =============================================================================
+# tool_c — envelope_matcher
+# =============================================================================
+
+from tool_c.envelope_matcher import match_envelope
+
+
+def _em_pattern(templates):
+    return {"endpoint_envelopes": {"templates": templates}}
+
+
+def _em_file(keys):
+    return {"envelope_keys": [{"key": k, "line_no": i} for i, k in enumerate(keys)]}
+
+
+class TestEnvelopeMatcher:
+    def test_matches_keys_all_of(self):
+        tmpl = {"name": "t1", "keys_all_of": ["success"], "keys_any_of": [], "example": {}}
+        result = match_envelope(_em_file(["success", "data"]), _em_pattern([tmpl]))
+        assert result is not None
+        assert result["name"] == "t1"
+
+    def test_fails_when_keys_all_of_missing(self):
+        tmpl = {"name": "t1", "keys_all_of": ["success", "status"], "keys_any_of": []}
+        result = match_envelope(_em_file(["success"]), _em_pattern([tmpl]))
+        assert result is None
+
+    def test_matches_keys_any_of(self):
+        tmpl = {"name": "t1", "keys_all_of": ["success"], "keys_any_of": ["data", "items"]}
+        result = match_envelope(_em_file(["success", "items"]), _em_pattern([tmpl]))
+        assert result is not None
+
+    def test_fails_when_keys_any_of_none_present(self):
+        tmpl = {"name": "t1", "keys_all_of": ["success"], "keys_any_of": ["data", "items"]}
+        result = match_envelope(_em_file(["success", "meta"]), _em_pattern([tmpl]))
+        assert result is None
+
+    def test_empty_keys_any_of_always_satisfied(self):
+        tmpl = {"name": "t1", "keys_all_of": ["success"], "keys_any_of": []}
+        result = match_envelope(_em_file(["success"]), _em_pattern([tmpl]))
+        assert result is not None
+
+    def test_no_templates_returns_none(self):
+        result = match_envelope(_em_file(["success"]), _em_pattern([]))
+        assert result is None
+
+    def test_empty_envelope_keys_returns_none(self):
+        tmpl = {"name": "t1", "keys_all_of": ["success"], "keys_any_of": []}
+        result = match_envelope(_em_file([]), _em_pattern([tmpl]))
+        assert result is None
+
+    def test_returns_first_matching_template(self):
+        templates = [
+            {"name": "t1", "keys_all_of": ["status"], "keys_any_of": []},
+            {"name": "t2", "keys_all_of": ["success"], "keys_any_of": []},
+        ]
+        result = match_envelope(_em_file(["success"]), _em_pattern(templates))
+        assert result["name"] == "t2"
+
+
+# =============================================================================
+# tool_c — redactor
+# =============================================================================
+
+from tool_c.redactor import redact_body, param_placeholder
+
+
+class TestRedactBody:
+    def test_api_key_redacted(self):
+        body = '{\n  "api_key": "abc123"\n}'
+        result, was_redacted = redact_body(body)
+        assert was_redacted
+        assert "REDACTED" in result
+        assert "abc123" not in result
+
+    def test_token_redacted(self):
+        body = '{"token": "secret_value"}'
+        result, was_redacted = redact_body(body)
+        assert was_redacted
+        assert "REDACTED" in result
+
+    def test_password_redacted(self):
+        body = '{"password": "hunter2"}'
+        result, was_redacted = redact_body(body)
+        assert was_redacted
+
+    def test_secret_redacted(self):
+        body = '{"secret": "mysecret"}'
+        result, was_redacted = redact_body(body)
+        assert was_redacted
+
+    def test_non_secret_not_redacted(self):
+        body = '{"username": "alice", "user_id": 1}'
+        result, was_redacted = redact_body(body)
+        assert not was_redacted
+        assert "alice" in result
+
+    def test_empty_value_still_redacted(self):
+        body = '{"api_key": ""}'
+        result, was_redacted = redact_body(body)
+        assert was_redacted
+        assert "REDACTED" in result
+
+    def test_non_string_value_not_affected(self):
+        # Numbers/booleans not affected (regex only matches "...")
+        body = '{"user_id": 0, "active": true}'
+        result, was_redacted = redact_body(body)
+        assert not was_redacted
+
+
+class TestParamPlaceholder:
+    def test_id_suffix_returns_zero(self):
+        assert param_placeholder("user_id") == 0
+        assert param_placeholder("id") == 0
+
+    def test_count_suffix_returns_zero(self):
+        assert param_placeholder("item_count") == 0
+
+    def test_page_suffix_returns_zero(self):
+        assert param_placeholder("page") == 0
+
+    def test_limit_suffix_returns_zero(self):
+        assert param_placeholder("limit") == 0
+
+    def test_date_suffix_returns_empty_string(self):
+        assert param_placeholder("created_at") == ""
+        assert param_placeholder("birth_date") == ""
+
+    def test_is_prefix_returns_true(self):
+        assert param_placeholder("is_active") is True
+
+    def test_has_prefix_returns_true(self):
+        assert param_placeholder("has_access") is True
+
+    def test_enabled_returns_true(self):
+        assert param_placeholder("enabled") is True
+
+    def test_active_returns_true(self):
+        assert param_placeholder("active") is True
+
+    def test_unknown_key_returns_empty_string(self):
+        assert param_placeholder("username") == ""
+        assert param_placeholder("email") == ""
+
+    def test_secret_key_redacted_when_flag_set(self):
+        assert param_placeholder("api_key", redact_if_secret=True) == "REDACTED"
+        assert param_placeholder("token", redact_if_secret=True) == "REDACTED"
+
+    def test_normal_key_not_redacted_when_flag_set(self):
+        assert param_placeholder("username", redact_if_secret=True) == ""
+
+
+# =============================================================================
+# tool_c — postman_builder
+# =============================================================================
+
+from tool_c.postman_builder import build_collection
+from tool_c.classifier import ClassifiedFile
+
+
+def _cf(path="api.php", tier="L1", toolc_score=50, toola_score=50,
+        route_hints=None, json_body=None, get_params=None, post_params=None,
+        envelope_keys=None, strong_signals=None):
+    """Build a ClassifiedFile for postman_builder tests."""
+    rh = route_hints or [{"method": "GET", "uri": "/api/test", "source_file": "routes/api.php",
+                          "source_line": 1, "confidence": "high", "controller_method": None}]
+    file_record = {
+        "record_type": "file", "schema_version": "2.0",
+        "path": path, "framework": "laravel", "score": toola_score,
+        "score_breakdown": [],
+        "signals": {
+            "strong": [{"name": s, "occurrences": 1, "line_nos": []} for s in (strong_signals or [])],
+            "weak": [], "negative": [],
+        },
+        "dynamic_notes": [],
+        "route_hints": rh,
+        "input_params": {
+            "get":       get_params or [],
+            "post":      post_params or [],
+            "request":   [],
+            "json_body": json_body or [],
+        },
+        "method_hints": [],
+        "envelope_keys": [{"key": k, "line_no": i} for i, k in enumerate(envelope_keys or [])],
+        "output_points": [],
+        "custom_helpers_called": [],
+        "redaction_count": 0, "skipped": False, "skip_reason": None,
+        "encoding_note": None, "notes": [],
+    }
+    return ClassifiedFile(
+        file_record=file_record,
+        toolc_score=toolc_score,
+        toola_score=toola_score,
+        tier=tier,
+        confidence_label={"L1": "confirmed_endpoint", "L2": "uncertain", "L3": "not_endpoint"}[tier],
+        matched_signals={"strong": list(strong_signals or []), "weak": [], "negative": []},
+        score_divergence_warning=None,
+    )
+
+
+def _full_pattern(collection_name="API Test", default_method="GET",
+                  templates=None, pre_script=False, test_script=False):
+    return {
+        "version": "1.0",
+        "framework": "laravel",
+        "scoring": {
+            "strong_signals": [], "weak_signals": [], "negative_signals": [],
+            "thresholds": {"endpoint": 30, "uncertain": 8},
+        },
+        "endpoint_envelopes": {"templates": templates or []},
+        "method_inference": {
+            "priority_order": ["route_hints", "default"],
+            "rules": [], "default_method": default_method,
+        },
+        "postman_defaults": {
+            "collection_name": collection_name,
+            "base_url_variable": "baseUrl",
+            "auth_token_variable": "authToken",
+            "default_headers": [{"key": "Accept", "value": "application/json", "disabled": False}],
+            "auth_header": {"key": "Authorization", "value_template": "Bearer {{authToken}}"},
+            "generate_folder_per_directory": False,
+            "include_pre_request_script": pre_script,
+            "include_test_script": test_script,
+        },
+    }
+
+
+class TestBuildCollection:
+    def test_info_structure(self):
+        collection = build_collection([], _full_pattern("My API"))
+        assert collection["info"]["name"] == "My API"
+        assert "schema.getpostman.com" in collection["info"]["schema"]
+        assert collection["info"]["_tool_c_generated"] is True
+
+    def test_variable_block_present(self):
+        collection = build_collection([], _full_pattern())
+        keys = [v["key"] for v in collection["variable"]]
+        assert "baseUrl" in keys
+        assert "authToken" in keys
+
+    def test_l3_excluded(self):
+        files = [_cf(tier="L3")]
+        collection = build_collection(files, _full_pattern())
+        assert len(collection["item"]) == 0
+
+    def test_l2_excluded_by_default(self):
+        files = [_cf(tier="L2")]
+        collection = build_collection(files, _full_pattern())
+        assert len(collection["item"]) == 0
+
+    def test_l2_included_when_flag_set(self):
+        files = [_cf(tier="L2")]
+        collection = build_collection(files, _full_pattern(), include_uncertain=True)
+        assert len(collection["item"]) == 1
+
+    def test_l1_included_by_default(self):
+        files = [_cf(tier="L1")]
+        collection = build_collection(files, _full_pattern())
+        assert len(collection["item"]) == 1
+
+    def test_item_name_with_controller(self):
+        rh = [{"method": "POST", "uri": "/api/users", "source_file": "routes/api.php",
+               "source_line": 1, "confidence": "high", "controller_method": "UserController@store"}]
+        files = [_cf(route_hints=rh)]
+        collection = build_collection(files, _full_pattern())
+        assert collection["item"][0]["name"] == "POST /api/users (UserController@store)"
+
+    def test_item_name_without_controller(self):
+        rh = [{"method": "GET", "uri": "/api/posts", "source_file": "routes/api.php",
+               "source_line": 1, "confidence": "high", "controller_method": None}]
+        files = [_cf(route_hints=rh)]
+        collection = build_collection(files, _full_pattern())
+        assert collection["item"][0]["name"] == "GET /api/posts"
+
+    def test_url_uses_base_url_variable(self):
+        files = [_cf()]
+        collection = build_collection(files, _full_pattern())
+        url_raw = collection["item"][0]["request"]["url"]["raw"]
+        assert url_raw.startswith("{{baseUrl}}")
+
+    def test_get_has_no_body(self):
+        rh = [{"method": "GET", "uri": "/api/x", "source_file": "routes/api.php",
+               "source_line": 1, "confidence": "high", "controller_method": None}]
+        files = [_cf(route_hints=rh)]
+        collection = build_collection(files, _full_pattern())
+        assert "body" not in collection["item"][0]["request"]
+
+    def test_post_with_json_body_params(self):
+        rh = [{"method": "POST", "uri": "/api/x", "source_file": "routes/api.php",
+               "source_line": 1, "confidence": "high", "controller_method": None}]
+        files = [_cf(route_hints=rh, json_body=[{"key": "name", "line_no": 1},
+                                                  {"key": "email", "line_no": 2}])]
+        collection = build_collection(files, _full_pattern())
+        body = collection["item"][0]["request"]["body"]
+        assert body["mode"] == "raw"
+        assert "name" in body["raw"]
+
+    def test_post_with_post_params_gives_urlencoded(self):
+        rh = [{"method": "POST", "uri": "/api/x", "source_file": "routes/api.php",
+               "source_line": 1, "confidence": "high", "controller_method": None}]
+        files = [_cf(route_hints=rh, post_params=[{"key": "field1", "line_no": 1}])]
+        collection = build_collection(files, _full_pattern())
+        body = collection["item"][0]["request"]["body"]
+        assert body["mode"] == "urlencoded"
+
+    def test_get_query_params_populated(self):
+        rh = [{"method": "GET", "uri": "/api/x", "source_file": "routes/api.php",
+               "source_line": 1, "confidence": "high", "controller_method": None}]
+        files = [_cf(route_hints=rh, get_params=[{"key": "page", "line_no": 1}])]
+        collection = build_collection(files, _full_pattern())
+        url = collection["item"][0]["request"]["url"]
+        assert len(url["query"]) == 1
+        assert url["query"][0]["key"] == "page"
+
+    def test_tool_c_meta_present(self):
+        files = [_cf()]
+        collection = build_collection(files, _full_pattern())
+        meta = collection["item"][0]["_tool_c_meta"]
+        assert "confidence_tier" in meta
+        assert "toolc_score" in meta
+        assert "method_inference_source" in meta
+
+    def test_redaction_applied_for_secret_key(self):
+        rh = [{"method": "POST", "uri": "/api/x", "source_file": "routes/api.php",
+               "source_line": 1, "confidence": "high", "controller_method": None}]
+        files = [_cf(route_hints=rh, json_body=[{"key": "api_key", "line_no": 1}])]
+        collection = build_collection(files, _full_pattern())
+        meta = collection["item"][0]["_tool_c_meta"]
+        assert meta["redaction_applied"] is True
+        body_raw = collection["item"][0]["request"]["body"]["raw"]
+        assert "REDACTED" in body_raw
+
+    def test_no_envelope_match_in_meta(self):
+        files = [_cf(envelope_keys=["foo", "bar"])]  # no templates → no match
+        collection = build_collection(files, _full_pattern())
+        meta = collection["item"][0]["_tool_c_meta"]
+        assert meta["no_envelope_match"] is True
+
+    def test_envelope_match_in_meta(self):
+        templates = [{"name": "success_data", "keys_all_of": ["success"],
+                      "keys_any_of": ["data"], "example": {"success": True, "data": {}}}]
+        files = [_cf(envelope_keys=["success", "data"])]
+        collection = build_collection(files, _full_pattern(templates=templates))
+        meta = collection["item"][0]["_tool_c_meta"]
+        assert meta["no_envelope_match"] is False
+        assert meta["matched_envelope_template"] == "success_data"
+
+    def test_duplicate_names_disambiguated(self):
+        # Two items with same name (same uri, same method via two files)
+        rh = [{"method": "GET", "uri": "/api/x", "source_file": "routes/api.php",
+               "source_line": 1, "confidence": "high", "controller_method": None}]
+        files = [_cf("a.php", route_hints=rh), _cf("b.php", route_hints=rh)]
+        collection = build_collection(files, _full_pattern())
+        names = [i["name"] for i in collection["item"]]
+        assert len(set(names)) == len(names), f"Duplicate names: {names}"
+
+    def test_folder_structure_by_directory(self):
+        rh = [{"method": "GET", "uri": "/api/x", "source_file": "routes/api.php",
+               "source_line": 1, "confidence": "high", "controller_method": None}]
+        files = [_cf("app/Http/Controllers/Api.php", route_hints=rh)]
+        collection = build_collection(files, _full_pattern(), folder_structure="by_directory")
+        item0 = collection["item"][0]
+        assert "item" in item0   # it's a folder
+        assert item0["name"] == "app/Http/Controllers"
+
+    def test_pre_request_script_included(self):
+        files = [_cf()]
+        collection = build_collection(files, _full_pattern(pre_script=True))
+        events = collection["item"][0].get("event", [])
+        listens = [e["listen"] for e in events]
+        assert "prerequest" in listens
+
+    def test_test_script_included(self):
+        files = [_cf()]
+        collection = build_collection(files, _full_pattern(test_script=True))
+        events = collection["item"][0].get("event", [])
+        listens = [e["listen"] for e in events]
+        assert "test" in listens
+
+    def test_auth_header_in_request(self):
+        files = [_cf()]
+        collection = build_collection(files, _full_pattern())
+        headers = collection["item"][0]["request"]["header"]
+        auth = next((h for h in headers if h["key"] == "Authorization"), None)
+        assert auth is not None
+        assert "authToken" in auth["value"]
+
+
+# =============================================================================
+# tool_c — postman_validator
+# =============================================================================
+
+from tool_c.postman_validator import validate_postman_collection
+
+
+class TestPostmanValidator:
+    def _valid_collection(self):
+        return {
+            "info": {
+                "name": "Test",
+                "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json",
+            },
+            "item": [],
+            "variable": [],
+        }
+
+    def test_valid_collection_passes(self):
+        assert validate_postman_collection(self._valid_collection()) is True
+
+    def test_missing_info_fails(self):
+        c = {"item": []}
+        assert validate_postman_collection(c) is False
+
+    def test_missing_item_fails(self):
+        c = {"info": {"name": "x", "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"}}
+        assert validate_postman_collection(c) is False
+
+    def test_schema_url_must_reference_getpostman(self):
+        c = self._valid_collection()
+        c["info"]["schema"] = "https://example.com/schema.json"
+        assert validate_postman_collection(c) is False
+
+    def test_item_with_valid_request_passes(self):
+        c = self._valid_collection()
+        c["item"] = [{
+            "name": "GET /api/test",
+            "request": {"method": "GET", "url": {"raw": "{{baseUrl}}/api/test"}},
+            "response": [],
+        }]
+        assert validate_postman_collection(c) is True
+
+    def test_underscore_keys_in_item_allowed(self):
+        # _tool_c_meta should not cause validation failure
+        c = self._valid_collection()
+        c["item"] = [{
+            "name": "test",
+            "request": {"method": "GET"},
+            "_tool_c_meta": {"source_file": "x.php"},
+        }]
+        assert validate_postman_collection(c) is True
+
+
+# =============================================================================
+# tool_c — jsonl_reader (via subprocess to test sys.exit codes)
+# =============================================================================
+
+import json as _json
+import subprocess as _sp
+import tempfile as _tf
+from pathlib import Path as _Path
+
+
+def _write_jsonl(lines):
+    """Write lines to a temp JSONL file and return the path."""
+    f = _tf.NamedTemporaryFile(suffix=".jsonl", mode="w", delete=False)
+    for line in lines:
+        f.write(_json.dumps(line) + "\n")
+    f.close()
+    return f.name
+
+
+_VALID_GS = {
+    "record_type": "global_stats", "schema_version": "2.0",
+    "generated_at": "2025-01-01T00:00:00+00:00",
+    "framework": {"detected": "plain", "confidence": "low", "evidence": []},
+    "scan_summary": {"total_files_scanned": 1, "total_files_skipped": 0, "skip_reasons": {},
+                     "candidate_files_above_score_0": 1, "candidate_files_above_score_30": 0,
+                     "candidate_files_above_score_60": 0},
+    "signal_frequency_table": [], "custom_helper_registry": [],
+    "envelope_key_frequency": [], "method_distribution": {}, "co_occurrence_patterns": [],
+    "pattern_json_generation_hints": {
+        "recommended_endpoint_threshold": 30, "recommended_uncertain_threshold": 8,
+        "minimum_threshold_gap": 10,
+    },
+    "top_dirs": [],
+}
+_VALID_SK = {"record_type": "skipped_files_summary", "skipped_files": []}
+
+
+class TestJSONLReader:
+    def test_valid_jsonl_returns_correct_types(self):
+        from tool_c.jsonl_reader import read_jsonl
+        path = _write_jsonl([_VALID_GS, _VALID_SK])
+        try:
+            gs, files, skipped = read_jsonl(path)
+            assert gs["schema_version"] == "2.0"
+            assert isinstance(files, list)
+            assert "skipped_files" in skipped
+        finally:
+            _Path(path).unlink(missing_ok=True)
+
+    def test_wrong_schema_version_causes_exit_2(self):
+        bad_gs = dict(_VALID_GS, schema_version="1.0")
+        path = _write_jsonl([bad_gs, _VALID_SK])
+        try:
+            result = _sp.run(
+                ["python3", "-c",
+                 f"from tool_c.jsonl_reader import read_jsonl; read_jsonl('{path}')"],
+                capture_output=True, cwd=str(_Path(__file__).parent.parent),
+            )
+            assert result.returncode == 2
+        finally:
+            _Path(path).unlink(missing_ok=True)
+
+    def test_file_records_parsed(self):
+        from tool_c.jsonl_reader import read_jsonl
+        file_rec = {
+            "record_type": "file", "schema_version": "2.0",
+            "path": "test.php", "framework": "plain", "score": 10,
+            "score_breakdown": [], "signals": {"strong": [], "weak": [], "negative": []},
+            "dynamic_notes": [], "route_hints": [], "input_params": {"get": [], "post": [], "request": [], "json_body": []},
+            "method_hints": [], "envelope_keys": [], "output_points": [],
+            "custom_helpers_called": [], "redaction_count": 0, "skipped": False,
+            "skip_reason": None, "encoding_note": None, "notes": [],
+        }
+        path = _write_jsonl([_VALID_GS, file_rec, _VALID_SK])
+        try:
+            gs, files, skipped = read_jsonl(path)
+            assert len(files) == 1
+            assert files[0]["path"] == "test.php"
+        finally:
+            _Path(path).unlink(missing_ok=True)
+
+    def test_skipped_files_summary_parsed(self):
+        from tool_c.jsonl_reader import read_jsonl
+        sk = {"record_type": "skipped_files_summary",
+              "skipped_files": [{"file": "big.php", "reason": "too_large", "size_mb": 8.2}]}
+        path = _write_jsonl([_VALID_GS, sk])
+        try:
+            _, _, skipped = read_jsonl(path)
+            assert len(skipped["skipped_files"]) == 1
+            assert skipped["skipped_files"][0]["file"] == "big.php"
+        finally:
+            _Path(path).unlink(missing_ok=True)
+
+    def test_malformed_json_line_skipped(self, capsys):
+        from tool_c.jsonl_reader import read_jsonl
+        f = _tf.NamedTemporaryFile(suffix=".jsonl", mode="w", delete=False)
+        f.write(_json.dumps(_VALID_GS) + "\n")
+        f.write("{not valid json\n")
+        f.write(_json.dumps(_VALID_SK) + "\n")
+        f.close()
+        try:
+            _, files, _ = read_jsonl(f.name)
+            assert files == []   # malformed line skipped, no crash
+        finally:
+            _Path(f.name).unlink(missing_ok=True)
+
+
+# =============================================================================
+# tool_c — catalog_writer
+# =============================================================================
+
+from tool_c.catalog_writer import build_catalog
+
+
+class TestBuildCatalog:
+    def _make_classified(self, tier, path="api.php", toolc=50, toola=50):
+        fr = {
+            "record_type": "file", "schema_version": "2.0",
+            "path": path, "framework": "laravel", "score": toola,
+            "score_breakdown": [],
+            "signals": {"strong": [], "weak": [], "negative": []},
+            "dynamic_notes": [], "route_hints": [],
+            "input_params": {"get": [], "post": [], "request": [], "json_body": []},
+            "method_hints": [], "envelope_keys": [], "output_points": [],
+            "custom_helpers_called": [], "redaction_count": 0, "skipped": False,
+            "skip_reason": None, "encoding_note": None, "notes": [],
+        }
+        label = {"L1": "confirmed_endpoint", "L2": "uncertain", "L3": "not_endpoint"}[tier]
+        return ClassifiedFile(
+            file_record=fr, toolc_score=toolc, toola_score=toola,
+            tier=tier, confidence_label=label,
+            matched_signals={"strong": [], "weak": [], "negative": []},
+            score_divergence_warning=None,
+        )
+
+    def _global_stats(self):
+        return {
+            "signal_frequency_table": [],
+            "custom_helper_registry": [],
+            "pattern_json_generation_hints": {
+                "recommended_endpoint_threshold": 30,
+                "minimum_threshold_gap": 10,
+            },
+            "framework": {"detected": "laravel"},
+        }
+
+    def _pattern(self):
+        return {
+            "version": "1.0",
+            "framework": "laravel",
+            "scoring": {
+                "strong_signals": [], "weak_signals": [], "negative_signals": [],
+                "thresholds": {"endpoint": 30, "uncertain": 8},
+            },
+            "endpoint_envelopes": {"templates": []},
+            "method_inference": {
+                "priority_order": ["default"], "rules": [], "default_method": "GET",
+            },
+            "postman_defaults": {
+                "collection_name": "T", "base_url_variable": "baseUrl",
+                "auth_token_variable": "authToken", "default_headers": [],
+                "auth_header": {"key": "Authorization", "value_template": "Bearer {{authToken}}"},
+            },
+        }
+
+    def test_summary_counts_correct(self):
+        classified = [
+            self._make_classified("L1", "a.php"),
+            self._make_classified("L2", "b.php"),
+            self._make_classified("L3", "c.php"),
+        ]
+        catalog = build_catalog(classified, self._pattern(), self._global_stats(),
+                                {"skipped_files": []})
+        s = catalog["summary"]
+        assert s["l1_endpoint_count"] == 1
+        assert s["l2_uncertain_count"] == 1
+        assert s["l3_ignored_count"] == 1
+        assert s["total_file_records_in_jsonl"] == 3
+
+    def test_endpoints_list_contains_l1_only(self):
+        classified = [
+            self._make_classified("L1", "a.php"),
+            self._make_classified("L2", "b.php"),
+        ]
+        catalog = build_catalog(classified, self._pattern(), self._global_stats(),
+                                {"skipped_files": []})
+        assert len(catalog["endpoints"]) == 1
+        assert catalog["endpoints"][0]["file"] == "a.php"
+        assert len(catalog["uncertain_endpoints"]) == 1
+
+    def test_skipped_files_carried_forward(self):
+        skipped = {"skipped_files": [{"file": "big.php", "reason": "too_large", "size_mb": 8.2}]}
+        catalog = build_catalog([], self._pattern(), self._global_stats(), skipped)
+        assert len(catalog["skipped_from_jsonl"]) == 1
+
+    def test_threshold_divergence_no_warning_within_15(self):
+        catalog = build_catalog([], self._pattern(), self._global_stats(), {"skipped_files": []})
+        check = catalog["threshold_divergence_check"]
+        # recommended=30, actual=30, divergence=0 → no warning
+        assert check["divergence"] == 0
+        assert check["warning"] is None
+
+    def test_threshold_divergence_warning_above_15(self):
+        gs = self._global_stats()
+        gs["pattern_json_generation_hints"]["recommended_endpoint_threshold"] = 50
+        # actual=30, recommended=50 → divergence=20 > 15 → warning
+        catalog = build_catalog([], self._pattern(), gs, {"skipped_files": []})
+        check = catalog["threshold_divergence_check"]
+        assert check["divergence"] == 20
+        assert check["warning"] is not None
+
+    def test_generated_at_field_present(self):
+        catalog = build_catalog([], self._pattern(), self._global_stats(), {"skipped_files": []})
+        assert "generated_at" in catalog
+        assert "T" in catalog["generated_at"]  # ISO timestamp contains T
+
+    def test_endpoint_entry_has_required_fields(self):
+        classified = [self._make_classified("L1", "api.php", toolc=50, toola=50)]
+        catalog = build_catalog(classified, self._pattern(), self._global_stats(),
+                                {"skipped_files": []})
+        ep = catalog["endpoints"][0]
+        for field in ("file", "confidence_tier", "toolc_score", "toola_score",
+                      "matched_signals", "inferred_methods", "extracted_params",
+                      "no_envelope_match", "postman_items_generated"):
+            assert field in ep, f"Missing field: {field}"

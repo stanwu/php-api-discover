@@ -1,0 +1,71 @@
+{
+  "version": "1.0",
+  "source_jsonl_schema_version": "2.0",
+  "framework": "laravel",
+  "scoring": {
+    "strong_signals": [
+      {
+        "name": "response()->json(",
+        "pattern": "response\\(\\)->json\\(",
+        "weight": 25,
+        "kind": "strong"
+      }
+    ],
+    "weak_signals": [
+      {
+        "name": "json_encode(",
+        "pattern": "json_encode\\s*\\(",
+        "weight": 8,
+        "kind": "weak"
+      }
+    ],
+    "negative_signals": [
+      {
+        "name": "return view(",
+        "pattern": "return\\s+view\\s*\\(",
+        "weight": -15,
+        "kind": "negative"
+      }
+    ],
+    "thresholds": {
+      "endpoint": 30,
+      "uncertain": 8
+    }
+  },
+  "endpoint_envelopes": {
+    "templates": [
+      {
+        "name": "success_data",
+        "keys_all_of": ["success"],
+        "keys_any_of": ["data", "message"],
+        "example": {"success": true, "data": {}, "message": ""}
+      }
+    ]
+  },
+  "method_inference": {
+    "priority_order": [
+      "route_hints",
+      "request_method_check",
+      "input_param_type",
+      "signal_based",
+      "default"
+    ],
+    "rules": [],
+    "default_method": "GET"
+  },
+  "postman_defaults": {
+    "collection_name": "Test API Collection",
+    "base_url_variable": "baseUrl",
+    "auth_token_variable": "authToken",
+    "default_headers": [
+      {"key": "Accept", "value": "application/json", "disabled": false}
+    ],
+    "auth_header": {
+      "key": "Authorization",
+      "value_template": "Bearer {{authToken}}"
+    },
+    "generate_folder_per_directory": false,
+    "include_pre_request_script": false,
+    "include_test_script": false
+  }
+}

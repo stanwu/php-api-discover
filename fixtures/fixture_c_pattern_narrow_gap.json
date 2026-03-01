@@ -1,0 +1,50 @@
+{
+  "version": "1.0",
+  "source_jsonl_schema_version": "2.0",
+  "framework": "laravel",
+  "scoring": {
+    "strong_signals": [
+      {
+        "name": "response()->json(",
+        "pattern": "response\\(\\)->json\\(",
+        "weight": 25,
+        "kind": "strong"
+      }
+    ],
+    "weak_signals": [
+      {
+        "name": "json_encode(",
+        "pattern": "json_encode\\s*\\(",
+        "weight": 8,
+        "kind": "weak"
+      }
+    ],
+    "negative_signals": [
+      {
+        "name": "return view(",
+        "pattern": "return\\s+view\\s*\\(",
+        "weight": -15,
+        "kind": "negative"
+      }
+    ],
+    "thresholds": {
+      "endpoint": 30,
+      "uncertain": 25
+    }
+  },
+  "endpoint_envelopes": {
+    "templates": []
+  },
+  "method_inference": {
+    "priority_order": ["route_hints", "default"],
+    "rules": [],
+    "default_method": "GET"
+  },
+  "postman_defaults": {
+    "collection_name": "Test API",
+    "base_url_variable": "baseUrl",
+    "auth_token_variable": "authToken",
+    "default_headers": [],
+    "auth_header": {"key": "Authorization", "value_template": "Bearer {{authToken}}"}
+  }
+}

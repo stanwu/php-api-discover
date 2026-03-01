@@ -13,6 +13,9 @@ report*.md
 result*.md
 features*.jsonl
 features*.ndjson
+raw.jsonl
+pattern*.json
+test*.jsonl
 reports/
 outputs/
 out/

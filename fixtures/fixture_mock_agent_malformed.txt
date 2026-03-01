@@ -1,0 +1,10 @@
+Here is the pattern.json file I generated based on the evidence:
+
+{
+  "version": "1.0",
+  "framework": "laravel",
+  "scoring": {
+    "strong_signals": [
+      {"name": "return response()->json(", "pattern": "return response\\(\\)->json\\(", "weight": 35, "kind": "strong"
+    // UNCLOSED - this JSON is intentionally malformed
+  }

@@ -1,0 +1,18 @@
+## Human Reviewer Notes — Laravel Project Review
+
+After reviewing features_report.md, the following corrections apply:
+
+1. EXCLUDE the signal "Route::get(" from strong_signals. It was found primarily in
+   route definition files (routes/api.php), not in controller files. It creates
+   false positives when controllers are shared between web and API routes.
+
+2. The recommended_endpoint_threshold of 40 looks correct. Do NOT lower it.
+   Files scoring 30-40 appear to be mixed-purpose controllers with minimal API activity.
+
+3. The "echo HTML tag" negative signal weight should be increased to -20.
+   In this codebase, any file echoing raw HTML is definitely not an API endpoint.
+
+4. Add a note: all API endpoints in this project use the "data" and "message"
+   envelope keys consistently. The envelope template should include both as keys_all_of.
+
+5. The default_method should remain "GET" as most read endpoints lack explicit method hints.

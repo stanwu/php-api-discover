@@ -1,0 +1,16 @@
+__pycache__/
+*.py[cod]
+
+.venv/
+venv/
+
+.DS_Store
+
+# Tool outputs (recommended to keep untracked)
+report*.md
+result*.md
+features*.jsonl
+
+# Local build artifacts
+.built/
+

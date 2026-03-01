@@ -1,0 +1,8 @@
+repos:
+  - repo: local
+    hooks:
+      - id: pii-check
+        name: Check for PII and non-public data
+        entry: python tool_a/redactor.py
+        language: python
+        types: [text]

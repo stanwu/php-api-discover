@@ -138,7 +138,8 @@ Add a `route_hints` field to each file entry in both the Markdown report and JSO
     "uri": "/api/users",
     "source_file": "routes/api.php",
     "source_line": 14,
-    "confidence": "high"
+    "confidence": "high",
+    "controller_method": "UserController@store"
   }
 ]
 ```
@@ -149,6 +150,7 @@ Field definitions:
 - `source_file`: relative path to the route definition file
 - `source_line`: line number of the route declaration
 - `confidence`: `"high"` if parsed from explicit route file; `"low"` if inferred from file path only
+- `controller_method`: controller and action as parsed from route definition (e.g. `"UserController@store"`); `null` if not determinable (e.g. closure routes or plain PHP fallback)
 
 ---
 
@@ -390,14 +392,16 @@ JSONL 的**第一行**固定輸出全域統計物件，供 Claude Code 在逐行
       "uri": "/api/users",
       "source_file": "routes/api.php",
       "source_line": 14,
-      "confidence": "high"
+      "confidence": "high",
+      "controller_method": "UserController@store"
     },
     {
       "method": "GET",
       "uri": "/api/users/{id}",
       "source_file": "routes/api.php",
       "source_line": 15,
-      "confidence": "high"
+      "confidence": "high",
+      "controller_method": "UserController@show"
     }
   ],
   "input_params": {

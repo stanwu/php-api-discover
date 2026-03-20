@@ -32,6 +32,17 @@ _SIGNAL_ITEM = {
     },
 }
 
+_ENVELOPE_TEMPLATE_ITEM = {
+    "type": "object",
+    "required": ["name"],
+    "properties": {
+        "name":        {"type": "string"},
+        "keys_all_of": {"type": "array", "items": {"type": "string"}},
+        "keys_any_of": {"type": "array", "items": {"type": "string"}},
+        "example":     {"type": "object"},
+    },
+}
+
 PATTERN_JSON_SCHEMA: dict[str, Any] = {
     "type": "object",
     "required": [
@@ -66,7 +77,7 @@ PATTERN_JSON_SCHEMA: dict[str, Any] = {
             "type": "object",
             "required": ["templates"],
             "properties": {
-                "templates": {"type": "array"},
+                "templates": {"type": "array", "items": _ENVELOPE_TEMPLATE_ITEM},
             },
         },
         "method_inference": {
